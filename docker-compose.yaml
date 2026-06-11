@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  dolphin-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dolphin-mcp-server:latest
+    container_name: dolphin-mcp-server
+    restart: unless-stopped
+    ports:
+      - "32086:3000"    # MCP SSE 服务
+      - "32087:8080"    # 确认页面服务
+    environment:
+      - DS_BASE_URL=${DS_BASE_URL:-http://localhost:12346}
+      - DS_TOKEN=${DS_TOKEN}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=3000
+      - MCP_CONFIRM_BASE_URL=${MCP_CONFIRM_BASE_URL:-http://localhost:32087}
+      - MCP_CONFIRM_PORT=8080
+    env_file:
+      - .env
