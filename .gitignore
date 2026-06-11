@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+mcp_audit.log
+.env
+*.egg-info/
+dist/
+build/
+.omc/

@@ -1,0 +1,123 @@
+# =============================================================================
+# DolphinScheduler MCP Adapter — Kubernetes 部署清单
+# =============================================================================
+#
+# 使用方式:
+#   1. 构建并推送镜像:
+#      docker build -t crpi-z9ubwuys7r2hln54.cn-shanghai.personal.cr.aliyuncs.com/lee202603/dolphin-mcp:latest .
+#      docker push crpi-z9ubwuys7r2hln54.cn-shanghai.personal.cr.aliyuncs.com/lee202603/dolphin-mcp:latest
+#
+#   2. 修改下方 env 中的 MCP_CONFIRM_BASE_URL 为你的节点 IP:
+#      将 <YOUR_NODE_IP> 替换为实际的节点 IP 地址
+#
+#   3. 部署:
+#      kubectl apply -f k8s-deployment.yaml
+#
+#   4. 查看日志:
+#      kubectl logs -f deployment/dolphin-mcp-adapter
+#
+# =============================================================================
+
+# ─── Deployment ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dolphin-mcp-adapter
+  labels:
+    app: dolphin-mcp-adapter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dolphin-mcp-adapter
+  template:
+    metadata:
+      labels:
+        app: dolphin-mcp-adapter
+    spec:
+      containers:
+      - name: adapter
+        # 🔧 替换为你构建推送后的镜像地址
+        image: crpi-z9ubwuys7r2hln54.cn-shanghai.personal.cr.aliyuncs.com/lee202603/dolphin-mcp:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: mcp
+          containerPort: 3000
+          protocol: TCP
+        - name: confirm
+          containerPort: 8080
+          protocol: TCP
+        env:
+        # DolphinScheduler API 地址（容器内访问）
+        - name: DS_BASE_URL
+          value: "http://<YOUR_DS_HOST>:12346"
+        # DolphinScheduler Token
+        - name: DS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: dolphin-mcp-secrets
+              key: ds-token
+        # ⚠️ 替换为 k3s 节点实际 IP（浏览器访问确认页面的地址）
+        - name: MCP_CONFIRM_BASE_URL
+          value: "http://<YOUR_NODE_IP>:32087"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: confirm
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: confirm
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+---
+# ─── MCP SSE 服务（NodePort 32086）──────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: dolphin-mcp-nodeport
+  labels:
+    app: dolphin-mcp-adapter
+spec:
+  type: NodePort
+  selector:
+    app: dolphin-mcp-adapter
+  ports:
+    - name: mcp
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
+      nodePort: 32086
+
+---
+# ─── 确认页面服务（NodePort 32087）─────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: dolphin-mcp-confirm-nodeport
+  labels:
+    app: dolphin-mcp-adapter
+spec:
+  type: NodePort
+  selector:
+    app: dolphin-mcp-adapter
+  ports:
+    - name: confirm
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+      nodePort: 32087

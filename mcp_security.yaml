@@ -1,0 +1,83 @@
+# DolphinScheduler MCP 安全配置
+# 定义哪些操作需要浏览器确认
+
+security:
+  enabled: true
+  audit_log: "mcp_audit.log"
+  # 确认服务配置
+  confirm:
+    base_url: "http://localhost:8080"           # 本地开发默认值，K8s 部署通过 MCP_CONFIRM_BASE_URL 环境变量覆盖
+    listen_port: 8080                           # 确认服务监听端口
+    expire_seconds: 300                         # 确认请求过期时间（5分钟）
+
+# 工具风险分级规则
+# 从上到下匹配，先匹配先生效
+risk_levels:
+  # 🟢 安全 - 只读查询，直接放行
+  - action: allow
+    tools:
+      - query*
+      - list*
+      - get*
+      - view*
+      - count*
+      - verify*
+      - download*
+      - preview*
+      - gen*
+
+  # 🔵 低危 - 创建类，只记录日志
+  - action: log
+    tools:
+      - create*
+      - register*
+      - login*
+      - signOut*
+      - import*
+      - copy*
+      - add*
+      - connect*
+
+  # 🟡 中危 - 更新类，记录日志
+  - action: log
+    tools:
+      - update*
+      - switch*
+      - modify*
+      - move*
+      - save*
+      - taskSavePoint*
+      - batchActivate*
+      - activate*
+
+  # 🔴 敏感 - 需要浏览器确认
+  - action: confirm
+    tools:
+      # 状态变更
+      - release*
+      - publish*
+      - offline*
+      - execute*
+      - batchExecute*
+      - stop*
+      - close*
+      - startProcess*
+      - batchStart*
+      - startStream*
+      - startTask*
+      # 删除
+      - delete*
+      - del*
+      - batchDelete*
+      # 强制操作
+      - force*
+      # 权限变更
+      - grant*
+      - revoke*
+
+# 始终屏蔽的工具
+always_block:
+  - handleError*
+
+# 始终放行的工具
+always_allow: []
