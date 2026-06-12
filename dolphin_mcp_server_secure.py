@@ -228,9 +228,14 @@ class SecurityMiddleware(Middleware):
             self.audit.log(tool_name, arguments, 'blocked', 'refused')
             return _text_result(f'🔒 工具 `{tool_name}` 已被安全策略屏蔽，无法执行。', is_error=True)
 
-        # ── allow: 直接放行 ──
+        # ── allow: 直接放行（记录错误便于排查） ──
         if action == 'allow':
-            return await call_next(context)
+            try:
+                return await call_next(context)
+            except Exception as e:
+                logger.error(f'Error calling tool {tool_name}: {e}', exc_info=True)
+                self.audit.log(tool_name, arguments, 'allow_error', str(e))
+                raise
 
         # ── confirm: 暂停执行，等待浏览器确认后由 ConfirmServer 直接执行 ──
         if action == 'confirm':
@@ -312,11 +317,17 @@ async def setup_and_run():
     spec = fix_openapi_spec(spec)
     spec['servers'] = [{'url': BASE_URL}]
 
-    # 3. 创建 HTTP 客户端
+    # 3. 创建 HTTP 客户端（配置连接池防 "Connection reset by peer"）
     async_client = httpx.AsyncClient(
         base_url=BASE_URL,
         headers={'token': DS_TOKEN},
-        timeout=30.0,
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
+        limits=httpx.Limits(
+            max_connections=20,
+            max_keepalive_connections=5,
+            keepalive_expiry=120,   # 保持连接 120 秒，避免复用过期连接
+        ),
+        transport=httpx.AsyncHTTPTransport(retries=3),  # 自动重试连接重置
     )
 
     # 4. 创建 MCP Server
