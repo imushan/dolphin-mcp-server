@@ -188,10 +188,25 @@ class AuditLogger:
 # 核心：安全中间件（浏览器确认后直接执行，LLM 无需重试）
 # ──────────────────────────────────────────────
 
-def _text_result(text: str, *, is_error: bool = False) -> ToolResult:
-    """构造包含纯文本的 ToolResult，强制走 CallToolResult 序列化路径"""
+def _text_result(
+    text: str,
+    *,
+    is_error: bool = False,
+    structured_content: dict | None = None,
+) -> ToolResult:
+    """构造包含纯文本的 ToolResult，强制走 CallToolResult 序列化路径。
+
+    参数：
+      - is_error: True 时映射到 CallToolResult.isError，客户端会把本次调用
+        当作失败处理。用于敏感操作“暂停”场景，避免弱 agent 误判为执行成功
+        而继续后续链路（方案 A）。
+      - structured_content: 机器可读的结构化状态（映射到 CallToolResult
+        .structuredContent）。供弱模型/客户端直接读取，消除“操作是否已执行”
+        的文本歧义，必须是 dict（方案 B）。
+    """
     return ToolResult(
         content=[TextContent(type='text', text=text)],
+        structured_content=structured_content,
         is_error=is_error,
         meta={'_security': True},
     )
@@ -238,6 +253,11 @@ class SecurityMiddleware(Middleware):
                 raise
 
         # ── confirm: 暂停执行，等待浏览器确认后由 ConfirmServer 直接执行 ──
+        # 信号设计（A+B 方案）：
+        #   A. is_error=True + 明确“未执行/已暂停”文案 → 所有客户端都把本次调用
+        #      当作失败，弱 agent 不会误判为“已删除成功”而继续后续链路。
+        #   B. structured_content 提供机器可读状态 → 弱模型/客户端直接读取，
+        #      消除“操作是否已执行”的文本歧义，不依赖模型的自然语言推理。
         if action == 'confirm':
             # 创建 executor：浏览器确认后调用 mcp_server.call_tool 执行
             async def deferred_executor():
@@ -251,13 +271,28 @@ class SecurityMiddleware(Middleware):
 
             self.audit.log(tool_name, arguments, 'confirm_deferred', f'pending:{cid}')
 
+            # 方案 B：机器可读结构化状态，供弱模型/客户端直接读取
+            structured = {
+                'status': 'pending_confirmation',
+                'executed': False,
+                'requires_user_action': True,
+                'confirm_id': cid,
+                'confirm_url': confirm_url,
+                'tool': tool_name,
+                'arguments': arguments,
+            }
+
+            # 方案 A：is_error=True 让本次调用被识别为失败；文案明确“未执行”
             return _text_result(
-                f'🔒 **此操作需要用户在浏览器中确认后自动执行**\n\n'
+                f'⛔ **操作已暂停：尚未执行，等待用户在浏览器中确认**\n\n'
                 f'工具: `{tool_name}`\n'
                 f'参数: `{json.dumps(arguments, ensure_ascii=False, default=str)}`\n\n'
-                f'确认链接: {confirm_url}\n\n'
-                f'请通知用户打开上方链接完成确认，操作将在确认后自动执行。\n'
-                f'用户在浏览器中即可看到执行结果。'
+                f'👉 确认链接: {confirm_url}\n\n'
+                f'⚠️ 本次工具调用 **未成功执行**（is_error=true），请勿当作已删除/已执行。\n'
+                f'请把上方链接交给用户，用户在浏览器点击“确认执行”后，操作会自动完成并显示结果。\n'
+                f'在用户回复“已确认”之前，不要继续任何依赖该操作的后续步骤。',
+                is_error=True,
+                structured_content=structured,
             )
 
         # ── log: 记录日志后执行 ──
