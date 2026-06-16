@@ -109,6 +109,17 @@ def fix_openapi_spec(spec: dict) -> dict:
             for key in ('requestBody', 'responses'):
                 if key in operation:
                     _fix_malformed_refs(operation[key])
+
+            # 清空 response 的 content schema: DolphinScheduler 的 OpenAPI 文档与
+            # 实际返回经常不符(如 queryAllProjectList 声明 object 实际返回裸数组),
+            # 会让 MCP 客户端输出校验失败(array is not of type 'object')。
+            # 清空后 fastmcp 不再生成 output_schema → 客户端跳过校验,
+            # structuredContent 数据照常返回,不影响工具调用结果。
+            responses = operation.get('responses')
+            if isinstance(responses, dict):
+                for resp in responses.values():
+                    if isinstance(resp, dict):
+                        resp.pop('content', None)
     if 'components' in spec:
         _fix_malformed_refs(spec['components'])
     return spec
