@@ -40,6 +40,9 @@ DS_TOKEN = os.environ.get('DS_TOKEN', '')
 HOST = os.environ.get('MCP_HOST', '0.0.0.0')
 PORT = int(os.environ.get('MCP_PORT', '3000'))
 SECURITY_CONFIG_PATH = os.environ.get('MCP_SECURITY_CONFIG', str(Path(__file__).parent / 'mcp_security.yaml'))
+
+# 代码版本（每次发版手动更新这一行）
+CODE_VERSION = '2026-06-15'
 # ===============================================
 
 logging.basicConfig(
@@ -337,6 +340,7 @@ async def remove_blocked_tools(mcp: FastMCP, sec_config: SecurityConfig):
 
 async def setup_and_run():
     """异步启动流程"""
+    logger.info(f'📦 代码版本: {CODE_VERSION}')
 
     # 1. 加载安全配置
     logger.info(f'加载安全配置: {SECURITY_CONFIG_PATH}')
