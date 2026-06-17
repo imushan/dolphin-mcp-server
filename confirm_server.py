@@ -78,7 +78,17 @@ class ConfirmQueue:
                 'executor': executor,
                 'result': None,
             }
+        # 诊断日志：记录创建事件 + 当前队列快照（lock 已释放，可安全调用 diagnostic）
+        print(f'  [ConfirmQueue] CREATE id={confirm_id} tool={tool_name} '
+              f'expire_at={self._queue[confirm_id]["expire_at"]:.0f} | {self.diagnostic()}', flush=True)
         return confirm_id
+
+    def diagnostic(self) -> str:
+        """返回当前队列快照（用于日志诊断）。调用方不应已持有 _lock。"""
+        with self._lock:
+            pending = [cid for cid, r in self._queue.items() if r['status'] == 'pending']
+            return (f'queue_size={len(self._queue)} pending_count={len(pending)} '
+                    f'pending_ids={pending}')
 
     def get(self, confirm_id: str) -> dict | None:
         """获取确认请求详情"""
@@ -364,7 +374,10 @@ def render_result_page(status: str, tool_name: str, confirm_id: str,
         'rejected': ('❌ 已拒绝', 'status-rejected',
                      f'操作 `{tool_name}` 已拒绝，未执行。'),
         'expired':  ('⏰ 已过期', 'status-expired',
-                     '确认请求已过期，请重新发起操作。'),
+                     '确认请求已过期（超过有效期），请重新发起操作。'),
+        'not_found': ('❓ 请求不存在', 'status-expired',
+                      '该确认请求在服务端不存在。常见原因：服务已重启、'
+                      '链接已失效、或点到了旧会话的链接。请重新发起操作。'),
         'error':    ('❌ 执行失败', 'status-rejected',
                      f'操作 `{tool_name}` 执行过程中发生错误。'),
     }
@@ -487,7 +500,7 @@ def create_flask_app(queue: ConfirmQueue) -> Flask:
 # 简易 HTTP 版 Web 服务（无 Flask 依赖）
 # ──────────────────────────────────────────────
 
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 
@@ -514,12 +527,16 @@ def create_simple_server(queue: ConfirmQueue, port: int):
             if path.startswith('/confirm/'):
                 confirm_id = path.split('/')[-1]
                 record = queue.get(confirm_id)
-                if not record or record['status'] != 'pending':
-                    status = record['status'] if record else 'expired'
-                    tool = record['tool'] if record else '未知'
+                # 诊断日志：记录每次确认页查询的命中情况（区分 pending/过期/不存在）
+                hit = record['status'] if record else 'NOT_FOUND'
+                print(f'  [ConfirmServer] GET /confirm/{confirm_id} -> {hit} | {queue.diagnostic()}', flush=True)
+                if record is None:
+                    # 链接对应的请求不存在（服务重启 / 链接失效 / 旧会话）
+                    self._html(render_result_page('not_found', '未知', confirm_id))
+                elif record['status'] != 'pending':
                     self._html(render_result_page(
-                        status, tool, confirm_id,
-                        api_result=record.get('result') if record else None,
+                        record['status'], record['tool'], confirm_id,
+                        api_result=record.get('result'),
                     ))
                 else:
                     self._html(render_confirm_page(record, confirm_id))
@@ -567,23 +584,35 @@ def create_simple_server(queue: ConfirmQueue, port: int):
             self._json({'error': 'not found'}, 404)
 
         def _html(self, content: str, code: int = 200):
-            self.send_response(code)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(content.encode('utf-8'))
+            try:
+                self.send_response(code)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(content.encode('utf-8'))
+            except (BrokenPipeError, ConnectionResetError):
+                # 客户端已断开（k8s 存活探针 / 浏览器刷新 / 取消请求），
+                # 静默忽略，避免刷屏 traceback。
+                pass
 
         def _json(self, data: dict, code: int = 200):
-            self.send_response(code)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+            try:
+                self.send_response(code)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def log_message(self, format, *args):
             """输出访问日志"""
             if args:
                 print(f'  [ConfirmServer] {args[0]}', flush=True)
 
-    return HTTPServer(('0.0.0.0', port), ConfirmHandler)
+    # 使用 ThreadingHTTPServer：每个请求独立线程，避免 approve_and_execute
+    # 执行 API（最长 15s）期间阻塞存活探针 / 其它确认请求。
+    server = ThreadingHTTPServer(('0.0.0.0', port), ConfirmHandler)
+    server.daemon_threads = True
+    return server
 
 
 # ──────────────────────────────────────────────
